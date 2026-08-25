@@ -5,7 +5,7 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: '0 16 * * *'  # 18:00 CEST / 17:00 CET = 16:00 UTC
+    - cron: '0 16 * * *'
 
 permissions:
   contents: read
@@ -15,6 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       
@@ -27,8 +28,18 @@ jobs:
         run: |
           curl -fsSL https://ollama.ai/install.sh | sh
           ollama serve &
-          sleep 15
+          echo "Waiting for Ollama server..."
+          for i in {1..30}; do
+            if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "Ollama server ready"
+              break
+            fi
+            sleep 2
+          done
+          echo "Pulling model..."
           ollama pull llama3.2:3b
+          echo "Verifying model..."
+          ollama list
       
       - name: Install dependencies
         run: |
@@ -41,6 +52,7 @@ jobs:
           AI_PROVIDER: ollama
           OLLAMA_MODEL: llama3.2:3b
           OLLAMA_HOST: http://localhost:11434
+        timeout-minutes: 20
       
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
