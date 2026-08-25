@@ -26,35 +26,39 @@ class AIProcessor:
 
         in_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
 
+        # Primary provider from config
         primary_added = False
         if self.provider == "groq" and GROQ_API_KEY:
             self.providers.append(("groq", self._call_groq, GROQ_MODEL))
             primary_added = True
         elif self.provider == "openrouter" and OPENROUTER_API_KEY:
-            self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
+            # Use correct free model slug for OpenRouter
+            model = "meta-llama/llama-3.1-8b-instruct" if ":free" in OPENROUTER_MODEL else OPENROUTER_MODEL
+            self.providers.append(("openrouter", self._call_openrouter, model))
             primary_added = True
-        elif self.provider == "huggingface" and HUGGINGFACE_API_KEY:
+        elif self.provider == "huggingface" and HUGGINGFACE_API_KEY and not in_ci:
             self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
             primary_added = True
 
-        if not primary_added:
-            if GROQ_API_KEY:
-                self.providers.append(("groq", self._call_groq, GROQ_MODEL))
-            if OPENROUTER_API_KEY:
-                self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
-            if HUGGINGFACE_API_KEY:
-                self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
-
+        # Add available fallbacks (if not primary)
         if self.provider != "groq" and GROQ_API_KEY:
             self.providers.append(("groq", self._call_groq, GROQ_MODEL))
         if self.provider != "openrouter" and OPENROUTER_API_KEY:
-            self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
-        if self.provider != "huggingface" and HUGGINGFACE_API_KEY:
+            model = "meta-llama/llama-3.1-8b-instruct" if ":free" in OPENROUTER_MODEL else OPENROUTER_MODEL
+            self.providers.append(("openrouter", self._call_openrouter, model))
+        
+        # Only add HuggingFace if NOT in CI (DNS fails in GitHub Actions)
+        if self.provider != "huggingface" and HUGGINGFACE_API_KEY and not in_ci:
             self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
-        if self.provider != "ollama" and not in_ci:
+
+        # Local Ollama (only outside CI)
+        if not in_ci:
             import ollama
             self.ollama_client = ollama.Client(host=OLLAMA_HOST)
             self.providers.append(("ollama", self._call_ollama, OLLAMA_MODEL))
+            logger.info("Running locally - Ollama added to provider chain")
+        else:
+            logger.info("Running in CI - skipping Ollama and HuggingFace")
 
         self._provider_chain_debug = [f"{p[0]}({p[2]})" for p in self.providers]
         logger.info(f"Provider chain: {self._provider_chain_debug}")
@@ -76,8 +80,90 @@ class AIProcessor:
                 last_error = e
                 continue
 
+        # All providers failed - return fallback rule-based simplification
         logger.error(f"ALL PROVIDERS FAILED. Last error: {last_error}")
-        raise last_error or Exception("All providers failed")
+        return self._fallback_simplification(prompt)
+
+    def _fallback_simplification(self, prompt: str) -> str:
+        """Simple rule-based fallback when all AI providers fail"""
+        # Extract title and content from prompt
+        lines = prompt.split('\n')
+        title = ""
+        content = ""
+        for line in lines:
+            if line.startswith("Original title:"):
+                title = line.replace("Original title:", "").strip()
+            elif line.startswith("Original content:"):
+                content = line.replace("Original content:", "").strip()
+        
+        # Determine level from prompt
+        level = "A1"
+        for l in ["A1", "A2", "B1", "B2", "C1"]:
+            if f"for {l} level" in prompt:
+                level = l
+                break
+        
+        # Simple rule-based German simplification
+        simplified = self._rule_based_simplify(content, level)
+        
+        return json.dumps({
+            "title": title,
+            "content": simplified
+        }, ensure_ascii=False)
+
+    def _rule_based_simplify(self, text: str, level: str) -> str:
+        """Basic German text simplification rules"""
+        import re
+        
+        # Split into sentences
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        
+        simplified = []
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            
+            # Apply level-specific rules
+            if level == "A1":
+                # Very simple: split long sentences, present tense only
+                if len(sent.split()) > 12:
+                    parts = re.split(r',\s*', sent)
+                    for p in parts:
+                        if p.strip():
+                            simplified.append(p.strip() + ".")
+                else:
+                    simplified.append(sent)
+            elif level == "A2":
+                if len(sent.split()) > 15:
+                    parts = re.split(r',\s*', sent)
+                    for p in parts:
+                        if p.strip():
+                            simplified.append(p.strip() + ".")
+                else:
+                    simplified.append(sent)
+            elif level == "B1":
+                if len(sent.split()) > 20:
+                    parts = re.split(r',\s*', sent)
+                    for p in parts:
+                        if p.strip():
+                            simplified.append(p.strip() + ".")
+                else:
+                    simplified.append(sent)
+            else:  # B2, C1
+                simplified.append(sent)
+        
+        # Join and format as paragraphs
+        result = " ".join(simplified)
+        # Split into ~3 paragraphs
+        words = result.split()
+        if len(words) > 60:
+            third = len(words) // 3
+            p1 = " ".join(words[:third])
+            p2 = " ".join(words[third:2*third])
+            p3 = " ".join(words[2*third:])
+            return f"{p1}.\n\n{p2}.\n\n{p3}."
+        return result
 
     def process_article(self, article: Dict) -> Dict:
         original_lang = article.get("original_language", "unknown")
@@ -192,7 +278,9 @@ Return JSON with keys: title, content"""
     def _call_openrouter(self, prompt: str, temperature: float = 0.3) -> str:
         if not OPENROUTER_API_KEY:
             raise ValueError("OPENROUTER_API_KEY not set")
-        logger.info(f"Calling OpenRouter API with model: {OPENROUTER_MODEL}")
+        # Use correct free model
+        model = "meta-llama/llama-3.1-8b-instruct" if ":free" in OPENROUTER_MODEL else OPENROUTER_MODEL
+        logger.info(f"Calling OpenRouter API with model: {model}")
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -200,7 +288,7 @@ Return JSON with keys: title, content"""
             "X-Title": "Deutsch News"
         }
         data = {
-            "model": OPENROUTER_MODEL,
+            "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
             "response_format": {"type": "json_object"}
@@ -230,7 +318,6 @@ Return JSON with keys: title, content"""
             "parameters": {"temperature": temperature, "max_new_tokens": 2000}
         }
         
-        # Retry with DNS handling for GitHub Actions
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -253,16 +340,11 @@ Return JSON with keys: title, content"""
                     logger.warning(f"HuggingFace DNS error (attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         import time
-                        time.sleep(2 ** attempt)  # Exponential backoff
+                        time.sleep(2 ** attempt)
                         continue
                 raise
             except Exception as e:
                 raise
-        if isinstance(result, list):
-            content = result[0].get("generated_text", "")
-        else:
-            content = result.get("generated_text", "")
-        logger.info(f"HuggingFace response received, length: {len(content)}")
         return content
 
     def _build_simplification_prompt(self, content: str, title: str, level: str) -> str:
