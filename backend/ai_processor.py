@@ -40,32 +40,24 @@ class AIProcessor:
         title = article.get("title", "")
         
         if original_lang == "de":
+            # Already German - create all levels directly
             levels = CEFR_LEVELS["de"]
             processed = self._process_german(content, title, levels)
         else:
-            levels = CEFR_LEVELS["other"]
-            processed = self._process_foreign(content, title, original_lang, levels)
+            # Translate to German first, then create ALL levels from German
+            german_translation = self._translate_to_german(content, title, original_lang)
+            german_content = german_translation.get("content", content)
+            german_title = german_translation.get("title", title)
+            
+            # Create all CEFR levels from the German translation
+            levels = CEFR_LEVELS["de"]
+            processed = self._process_german(german_content, german_title, levels)
+            
+            # Add original language version
+            processed["Original"] = {"title": title, "content": content, "language": original_lang}
         
         article["versions"] = processed
         return article
-    
-    def _process_german(self, content: str, title: str, levels: List[str]) -> Dict:
-        versions = {}
-        for level in levels:
-            if level == "Original":
-                versions[level] = {"title": title, "content": content}
-            else:
-                simplified = self._simplify_to_level(content, title, level)
-                versions[level] = simplified
-        return versions
-    
-    def _process_foreign(self, content: str, title: str, original_lang: str, levels: List[str]) -> Dict:
-        versions = {}
-        german_translation = self._translate_to_german(content, title, original_lang)
-        c1_version = self._simplify_to_level(german_translation["content"], german_translation["title"], "C1")
-        versions["C1"] = c1_version
-        versions["Original"] = {"title": title, "content": content, "language": original_lang}
-        return versions
     
     def _simplify_to_level(self, content: str, title: str, level: str) -> Dict:
         prompt = self._build_simplification_prompt(content, title, level)

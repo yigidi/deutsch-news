@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 NEWS_SOURCES = {
+    # German sources
     "tagesschau": {
         "name": "Tagesschau",
         "url": "https://www.tagesschau.de/xml/rss2/",
@@ -28,6 +29,7 @@ NEWS_SOURCES = {
         "type": "rss",
         "language": "de"
     },
+    # English sources
     "bbc": {
         "name": "BBC News",
         "url": "http://feeds.bbci.co.uk/news/world/rss.xml",
@@ -39,7 +41,50 @@ NEWS_SOURCES = {
         "url": "https://www.reuters.com/world/rss",
         "type": "rss",
         "language": "en"
-    }
+    },
+    # Turkish sources (will be translated to German by AI)
+    "sozcu": {
+        "name": "Sözcü",
+        "url": "https://www.sozcu.com.tr/feeds/rss",
+        "type": "rss",
+        "language": "tr"
+    },
+    "hurriyet": {
+        "name": "Hürriyet",
+        "url": "https://www.hurriyet.com.tr/rss/anasayfa",
+        "type": "rss",
+        "language": "tr"
+    },
+    "milliyet": {
+        "name": "Milliyet",
+        "url": "https://www.milliyet.com.tr/rss/rssNew/anasayfa.xml",
+        "type": "rss",
+        "language": "tr"
+    },
+    "haberturk": {
+        "name": "Habertürk",
+        "url": "https://www.haberturk.com/rss",
+        "type": "rss",
+        "language": "tr"
+    },
+    "cnnturk": {
+        "name": "CNN Türk",
+        "url": "https://www.cnnturk.com/feeds/rss",
+        "type": "rss",
+        "language": "tr"
+    },
+    "ntv": {
+        "name": "NTV",
+        "url": "https://www.ntv.com.tr/son-dakika.rss",
+        "type": "rss",
+        "language": "tr"
+    },
+    "trthaber": {
+        "name": "TRT Haber",
+        "url": "https://www.trthaber.com/rss.xml",
+        "type": "rss",
+        "language": "tr"
+    },
 }
 
 CEFR_LEVELS = {
