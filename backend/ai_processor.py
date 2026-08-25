@@ -69,14 +69,19 @@ class AIProcessor:
     
     def _simplify_to_level(self, content: str, title: str, level: str) -> Dict:
         prompt = self._build_simplification_prompt(content, title, level)
+        logger.info(f"Simplifying to {level}, content length: {len(content)}")
         
         try:
             response = self._call(prompt, temperature=0.3)
+            logger.info(f"Raw response for {level}: {response[:200]}")
             result = json.loads(response)
             return {
                 "title": result.get("title", title),
                 "content": result.get("content", content)
             }
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error for {level}: {e}, response: {response[:500]}")
+            return {"title": title, "content": content}
         except Exception as e:
             logger.error(f"Error simplifying to {level}: {e}")
             return {"title": title, "content": content}
@@ -121,8 +126,13 @@ Return JSON with keys: title, content"""
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers, json=data, timeout=60
         )
+        if response.status_code != 200:
+            logger.error(f"Groq API error {response.status_code}: {response.text}")
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        logger.info(f"Groq response received, length: {len(content)}")
+        return content
     
     def _call_openrouter(self, prompt: str, temperature: float = 0.3) -> str:
         headers = {
