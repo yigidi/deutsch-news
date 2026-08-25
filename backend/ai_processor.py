@@ -2,7 +2,8 @@ import json
 import logging
 import os
 import requests
-from typing import Dict, List, Optional, Callable
+import re
+from typing import Dict, List, Optional
 from backend.config import (
     CEFR_LEVELS, AI_PROVIDER,
     OLLAMA_MODEL, OLLAMA_HOST,
@@ -13,373 +14,199 @@ from backend.config import (
 
 logger = logging.getLogger(__name__)
 
+LEVEL_RULES = {
+    "A1": {"max_words": 10, "tense": "present", "no_subclause": True},
+    "A2": {"max_words": 15, "tense": "present_perfect", "no_subclause": True},
+    "B1": {"max_words": 20, "tense": "mixed", "no_subclause": False},
+    "B2": {"max_words": 30, "tense": "mixed", "no_subclause": False},
+}
+
+def simple_simplify(text: str, level: str) -> str:
+    """Rule-based German simplification"""
+    rules = LEVEL_RULES.get(level, LEVEL_RULES["B1"])
+    max_words = rules["max_words"]
+    
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    out = []
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        words = s.split()
+        if len(words) <= max_words:
+            out.append(s)
+        else:
+            parts = re.split(r',\s*', s)
+            for p in parts:
+                p = p.strip()
+                if p and len(p.split()) <= max_words:
+                    out.append(p + ".")
+                elif p:
+                    sub = ' '.join(p.split()[:max_words]) + "."
+                    out.append(sub)
+    return " ".join(out)
+
+def split_paragraphs(text: str, level: str) -> str:
+    simplified = simple_simplify(text, level)
+    words = simplified.split()
+    if len(words) <= 60:
+        return simplified
+    third = len(words) // 3
+    p1 = " ".join(words[:third])
+    p2 = " ".join(words[third:2*third])
+    p3 = " ".join(words[2*third:])
+    return f"{p1}.\n\n{p2}.\n\n{p3}."
 
 class AIProcessor:
     def __init__(self):
         self.provider = AI_PROVIDER
-        self._init_provider_chain()
-
-    def _init_provider_chain(self):
-        """Build a chain of providers to try in order"""
-        self.providers = []
-        self.ollama_client = None
-
-        in_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
-
-        # Primary provider from config
-        primary_added = False
-        if self.provider == "groq" and GROQ_API_KEY:
-            self.providers.append(("groq", self._call_groq, GROQ_MODEL))
-            primary_added = True
-        elif self.provider == "openrouter" and OPENROUTER_API_KEY:
-            # Use correct free model slug for OpenRouter
-            model = "meta-llama/llama-3.1-8b-instruct" if ":free" in OPENROUTER_MODEL else OPENROUTER_MODEL
-            self.providers.append(("openrouter", self._call_openrouter, model))
-            primary_added = True
-        elif self.provider == "huggingface" and HUGGINGFACE_API_KEY and not in_ci:
-            self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
-            primary_added = True
-
-        # Add available fallbacks (if not primary)
-        if self.provider != "groq" and GROQ_API_KEY:
-            self.providers.append(("groq", self._call_groq, GROQ_MODEL))
-        if self.provider != "openrouter" and OPENROUTER_API_KEY:
-            model = "meta-llama/llama-3.1-8b-instruct" if ":free" in OPENROUTER_MODEL else OPENROUTER_MODEL
-            self.providers.append(("openrouter", self._call_openrouter, model))
-        
-        # Only add HuggingFace if NOT in CI (DNS fails in GitHub Actions)
-        if self.provider != "huggingface" and HUGGINGFACE_API_KEY and not in_ci:
-            self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
-
-        # Local Ollama (only outside CI)
-        if not in_ci:
-            import ollama
-            self.ollama_client = ollama.Client(host=OLLAMA_HOST)
-            self.providers.append(("ollama", self._call_ollama, OLLAMA_MODEL))
-            logger.info("Running locally - Ollama added to provider chain")
-        else:
-            logger.info("Running in CI - skipping Ollama and HuggingFace")
-
-        self._provider_chain_debug = [f"{p[0]}({p[2]})" for p in self.providers]
-        logger.info(f"Provider chain: {self._provider_chain_debug}")
-        if not self.providers:
-            logger.error("NO AI PROVIDERS AVAILABLE! Set GROQ_API_KEY, OPENROUTER_API_KEY, or HUGGINGFACE_API_KEY")
-
-    def _call_with_fallback(self, prompt: str, temperature: float = 0.3) -> str:
-        """Try each provider in chain until one works"""
-        last_error = None
-
-        for name, call_func, model in self.providers:
-            try:
-                logger.info(f"Trying provider: {name} (model: {model})")
-                result = call_func(prompt, temperature)
-                logger.info(f"Provider {name} succeeded")
-                return result
-            except Exception as e:
-                logger.warning(f"Provider {name} failed: {type(e).__name__}: {e}")
-                last_error = e
-                continue
-
-        # All providers failed - return fallback rule-based simplification
-        logger.error(f"ALL PROVIDERS FAILED. Last error: {last_error}")
-        return self._fallback_simplification(prompt)
-
-    def _fallback_simplification(self, prompt: str) -> str:
-        """Simple rule-based fallback when all AI providers fail"""
-        # Extract title and content from prompt
-        lines = prompt.split('\n')
-        title = ""
-        content = ""
-        for line in lines:
-            if line.startswith("Original title:"):
-                title = line.replace("Original title:", "").strip()
-            elif line.startswith("Original content:"):
-                content = line.replace("Original content:", "").strip()
-        
-        # Determine level from prompt
-        level = "A1"
-        for l in ["A1", "A2", "B1", "B2", "C1"]:
-            if f"for {l} level" in prompt:
-                level = l
-                break
-        
-        # Simple rule-based German simplification
-        simplified = self._rule_based_simplify(content, level)
-        
-        return json.dumps({
-            "title": title,
-            "content": simplified
-        }, ensure_ascii=False)
-
-    def _rule_based_simplify(self, text: str, level: str) -> str:
-        """Basic German text simplification rules"""
-        import re
-        
-        # Split into sentences
-        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-        
-        simplified = []
-        for sent in sentences:
-            sent = sent.strip()
-            if not sent:
-                continue
-            
-            # Apply level-specific rules
-            if level == "A1":
-                # Very simple: split long sentences, present tense only
-                if len(sent.split()) > 12:
-                    parts = re.split(r',\s*', sent)
-                    for p in parts:
-                        if p.strip():
-                            simplified.append(p.strip() + ".")
-                else:
-                    simplified.append(sent)
-            elif level == "A2":
-                if len(sent.split()) > 15:
-                    parts = re.split(r',\s*', sent)
-                    for p in parts:
-                        if p.strip():
-                            simplified.append(p.strip() + ".")
-                else:
-                    simplified.append(sent)
-            elif level == "B1":
-                if len(sent.split()) > 20:
-                    parts = re.split(r',\s*', sent)
-                    for p in parts:
-                        if p.strip():
-                            simplified.append(p.strip() + ".")
-                else:
-                    simplified.append(sent)
-            else:  # B2, C1
-                simplified.append(sent)
-        
-        # Join and format as paragraphs
-        result = " ".join(simplified)
-        # Split into ~3 paragraphs
-        words = result.split()
-        if len(words) > 60:
-            third = len(words) // 3
-            p1 = " ".join(words[:third])
-            p2 = " ".join(words[third:2*third])
-            p3 = " ".join(words[2*third:])
-            return f"{p1}.\n\n{p2}.\n\n{p3}."
-        return result
-
+        self.in_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
+        self.groq_model = GROQ_MODEL or "llama-3.1-8b-instant"
+        self.openrouter_model = OPENROUTER_MODEL or "meta-llama/llama-3.1-8b-instruct"
+        if ":free" in self.openrouter_model:
+            self.openrouter_model = "meta-llama/llama-3.1-8b-instruct"
+    
     def process_article(self, article: Dict) -> Dict:
-        original_lang = article.get("original_language", "unknown")
+        lang = article.get("original_language", "unknown")
         content = article.get("content", "")
         title = article.get("title", "")
-
-        if original_lang == "de":
+        
+        if lang == "de":
             levels = CEFR_LEVELS["de"]
-            processed = self._process_german(content, title, levels)
+            base_content, base_title = content, title
         else:
-            german_translation = self._translate_to_german(content, title, original_lang)
-            german_content = german_translation.get("content", content)
-            german_title = german_translation.get("title", title)
-
+            # Translate to German first
+            translated = self._translate_to_german(content, title, lang)
+            base_content = translated.get("content", content)
+            base_title = translated.get("title", title)
             levels = CEFR_LEVELS["de"]
-            processed = self._process_german(german_content, german_title, levels)
-
-            processed["Original"] = {"title": title, "content": content, "language": original_lang}
-
-        article["versions"] = processed
-        return article
-
-    def _process_german(self, content: str, title: str, levels: List[str]) -> Dict:
+        
         versions = {}
         for level in levels:
             if level == "Original":
-                versions[level] = {"title": title, "content": content}
+                if lang == "de":
+                    versions[level] = {"title": title, "content": content}
+                else:
+                    versions[level] = {"title": title, "content": content, "language": lang}
             else:
-                simplified = self._simplify_to_level(content, title, level)
+                simplified = self._simplify_to_level(base_content, base_title, level)
                 versions[level] = simplified
-        return versions
-
+        
+        article["versions"] = versions
+        return article
+    
     def _simplify_to_level(self, content: str, title: str, level: str) -> Dict:
-        prompt = self._build_simplification_prompt(content, title, level)
-        logger.info(f"Simplifying to {level}, content length: {len(content)}")
-
-        try:
-            response = self._call_with_fallback(prompt, temperature=0.3)
-            logger.info(f"Raw response for {level}: {response[:200]}")
-            result = json.loads(response)
-            simplified_content = result.get("content", content)
-            simplified_title = result.get("title", title)
-
-            if simplified_content == content and level != "Original":
-                logger.warning(f"AI returned same content for {level}, simplification may have failed")
-
-            return {
-                "title": simplified_title,
-                "content": simplified_content
-            }
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error for {level}: {e}, response: {response[:500]}")
-            return {"title": title, "content": content, "_ai_error": f"JSON parse error: {e}"}
-        except Exception as e:
-            logger.error(f"Error simplifying to {level}: {e}")
-            return {"title": title, "content": content, "_ai_error": str(e)}
-
+        # Try AI first
+        ai_result = self._try_ai_simplify(content, title, level)
+        if ai_result and ai_result.get("content") != content:
+            return ai_result
+        
+        # Fallback to rule-based
+        logger.info(f"Using rule-based fallback for {level}")
+        simplified_content = split_paragraphs(content, level)
+        simplified_title = simple_simplify(title, level)
+        return {"title": simplified_title, "content": simplified_content}
+    
+    def _try_ai_simplify(self, content: str, title: str, level: str) -> Optional[Dict]:
+        prompt = self._build_prompt(content, title, level)
+        
+        # Try Groq
+        if GROQ_API_KEY:
+            try:
+                result = self._call_groq(prompt)
+                if result:
+                    return json.loads(result)
+            except Exception as e:
+                logger.warning(f"Groq failed: {e}")
+        
+        # Try OpenRouter
+        if OPENROUTER_API_KEY:
+            try:
+                result = self._call_openrouter(prompt)
+                if result:
+                    return json.loads(result)
+            except Exception as e:
+                logger.warning(f"OpenRouter failed: {e}")
+        
+        return None
+    
     def _translate_to_german(self, content: str, title: str, source_lang: str) -> Dict:
-        prompt = f"""Translate the following news article from {source_lang} to German (C1 level).
-Keep the meaning accurate but use sophisticated German vocabulary and grammar appropriate for C1 level.
+        prompt = f"""Translate to German (C1 level). Return JSON with title, content.
 
 Title: {title}
-Content: {content}
-
-Return JSON with keys: title, content"""
-
-        try:
-            response = self._call_with_fallback(prompt, temperature=0.2)
-            return json.loads(response)
-        except Exception as e:
-            logger.error(f"Error translating: {e}")
-            return {"title": title, "content": content}
-
-    def _call_ollama(self, prompt: str, temperature: float = 0.3) -> str:
-        if not self.ollama_client:
-            import ollama
-            self.ollama_client = ollama.Client(host=OLLAMA_HOST)
-        response = self.ollama_client.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            format="json",
-            options={"temperature": temperature}
-        )
-        return response["response"]
-
-    def _call_groq(self, prompt: str, temperature: float = 0.3) -> str:
-        if not GROQ_API_KEY:
-            raise ValueError("GROQ_API_KEY not set")
-        logger.info(f"Calling Groq API with model: {GROQ_MODEL}")
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": GROQ_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "response_format": {"type": "json_object"}
-        }
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers, json=data, timeout=60
-        )
-        if response.status_code != 200:
-            logger.error(f"Groq API error {response.status_code}: {response.text}")
-        response.raise_for_status()
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        logger.info(f"Groq response received, length: {len(content)}")
-        return content
-
-    def _call_openrouter(self, prompt: str, temperature: float = 0.3) -> str:
-        if not OPENROUTER_API_KEY:
-            raise ValueError("OPENROUTER_API_KEY not set")
-        # Use correct free model
-        model = "meta-llama/llama-3.1-8b-instruct" if ":free" in OPENROUTER_MODEL else OPENROUTER_MODEL
-        logger.info(f"Calling OpenRouter API with model: {model}")
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/yigidi/deutsch-news",
-            "X-Title": "Deutsch News"
-        }
-        data = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "response_format": {"type": "json_object"}
-        }
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers, json=data, timeout=60
-        )
-        if response.status_code != 200:
-            logger.error(f"OpenRouter API error {response.status_code}: {response.text}")
-        response.raise_for_status()
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        logger.info(f"OpenRouter response received, length: {len(content)}")
-        return content
-
-    def _call_huggingface(self, prompt: str, temperature: float = 0.3) -> str:
-        if not HUGGINGFACE_API_KEY:
-            raise ValueError("HUGGINGFACE_API_KEY not set")
-        logger.info(f"Calling HuggingFace API with model: {HUGGINGFACE_MODEL}")
-        headers = {
-            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "inputs": prompt,
-            "parameters": {"temperature": temperature, "max_new_tokens": 2000}
-        }
+Content: {content}"""
         
-        max_retries = 3
-        for attempt in range(max_retries):
+        # Try Groq
+        if GROQ_API_KEY:
             try:
-                response = requests.post(
-                    f"https://api-inference.huggingface.co/models/{HUGGINGFACE_MODEL}",
-                    headers=headers, json=data, timeout=120
-                )
-                if response.status_code != 200:
-                    logger.error(f"HuggingFace API error {response.status_code}: {response.text}")
-                response.raise_for_status()
-                result = response.json()
-                if isinstance(result, list):
-                    content = result[0].get("generated_text", "")
-                else:
-                    content = result.get("generated_text", "")
-                logger.info(f"HuggingFace response received, length: {len(content)}")
-                return content
-            except requests.exceptions.ConnectionError as e:
-                if "NameResolutionError" in str(e) or "Failed to resolve" in str(e):
-                    logger.warning(f"HuggingFace DNS error (attempt {attempt + 1}/{max_retries}): {e}")
-                    if attempt < max_retries - 1:
-                        import time
-                        time.sleep(2 ** attempt)
-                        continue
-                raise
+                result = self._call_groq(prompt, temp=0.2)
+                return json.loads(result)
             except Exception as e:
-                raise
-        return content
-
-    def _build_simplification_prompt(self, content: str, title: str, level: str) -> str:
-        level_descriptions = {
-            "A1": "Very simple German, present tense only, short sentences (max 10 words), basic vocabulary (A1 level), no subordinate clauses",
-            "A2": "Simple German, present and perfect tense, short sentences (max 15 words), everyday vocabulary (A2 level), simple subordinate clauses with 'weil', 'dass'",
-            "B1": "Standard German, various tenses, medium sentences (max 20 words), broader vocabulary (B1 level), subordinate clauses, passive voice occasionally",
-            "B2": "Advanced German, complex sentence structures, varied vocabulary (B2 level), idiomatic expressions, all tenses, nuanced expressions",
-            "C1": "Sophisticated German, complex syntax, academic/formal vocabulary (C1 level), nuanced expressions, implicit meanings, stylistic devices"
+                logger.warning(f"Translation Groq failed: {e}")
+        
+        # Fallback: simple translation indicator
+        return {"title": f"[DE] {title}", "content": f"[Übersetzt aus {source_lang}] {content}"}
+    
+    def _call_groq(self, prompt: str, temp: float = 0.3) -> Optional[str]:
+        if not GROQ_API_KEY:
+            return None
+        try:
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            data = {
+                "model": self.groq_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temp,
+                "response_format": {"type": "json_object"}
+            }
+            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", 
+                               headers=headers, json=data, timeout=60)
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.warning(f"Groq error: {e}")
+        return None
+    
+    def _call_openrouter(self, prompt: str, temp: float = 0.3) -> Optional[str]:
+        if not OPENROUTER_API_KEY:
+            return None
+        try:
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/yigidi/deutsch-news",
+                "X-Title": "Deutsch News"
+            }
+            data = {
+                "model": self.openrouter_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temp,
+                "response_format": {"type": "json_object"}
+            }
+            resp = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                               headers=headers, json=data, timeout=60)
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.warning(f"OpenRouter error: {e}")
+        return None
+    
+    def _build_prompt(self, content: str, title: str, level: str) -> str:
+        rules = {
+            "A1": "Sehr einfaches Deutsch, nur Präsens, kurze Sätze (max 10 Wörter), Grundwortschatz, keine Nebensätze",
+            "A2": "Einfaches Deutsch, Präsens/Perfekt, kurze Sätze (max 15 Wörter), Alltagswortschatz, einfache Nebensätze mit 'weil', 'dass'",
+            "B1": "Standarddeutsch, verschiedene Zeiten, mittlere Sätze (max 20 Wörter), breiterer Wortschatz, Nebensätze, gelegentlich Passiv",
+            "B2": "Fortgeschrittenes Deutsch, komplexe Strukturen, variierter Wortschatz (B2), idiomatische Ausdrücke, alle Zeiten, nuancierte Ausdrücke",
         }
+        desc = rules.get(level, rules["B1"])
+        
+        return f"""Vereinfache diesen deutschen Nachrichtentext für {level}-Lerner.
 
-        desc = level_descriptions.get(level, level_descriptions["B1"])
+Anforderungen: {desc}
 
-        return f"""Rewrite the following German news article for {level} level learners.
+Originaltitel: {title}
+Originaltext: {content}
 
-Level requirements: {desc}
-
-Original title: {title}
-Original content: {content}
-
-Return ONLY valid JSON with keys: title, content
-- title: simplified title
-- content: simplified article text (3-5 paragraphs)
-- Do not add explanations, only the JSON"""
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    processor = AIProcessor()
-
-    test_article = {
-        "title": "Bundeskanzler besucht Frankreich",
-        "content": "Bundeskanzler Olaf Scholz hat Frankreich besucht, um über die europäische Sicherheitsarchitektur zu sprechen. Bei dem Treffen mit Präsident Macron ging es um die Stärkung der deutsch-französischen Zusammenarbeit.",
-        "original_language": "de"
-    }
-
-    result = processor.process_article(test_article)
-    print(json.dumps(result["versions"], indent=2, ensure_ascii=False))
+Antworte NUR als JSON mit: title, content
+- title: vereinfachter Titel
+- content: vereinfachter Text (3-5 Absätze)
+- Keine Erklärungen, nur JSON"""
