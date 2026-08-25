@@ -1,15 +1,38 @@
-import ollama
 import json
 import logging
+import os
+import requests
 from typing import Dict, List, Optional
-from backend.config import OLLAMA_MODEL, OLLAMA_HOST, CEFR_LEVELS
+from backend.config import (
+    CEFR_LEVELS, AI_PROVIDER,
+    OLLAMA_MODEL, OLLAMA_HOST,
+    GROQ_API_KEY, GROQ_MODEL,
+    OPENROUTER_API_KEY, OPENROUTER_MODEL,
+    HUGGINGFACE_API_KEY, HUGGINGFACE_MODEL
+)
 
 logger = logging.getLogger(__name__)
 
 class AIProcessor:
     def __init__(self):
-        self.client = ollama.Client(host=OLLAMA_HOST)
-        self.model = OLLAMA_MODEL
+        self.provider = AI_PROVIDER
+        self._init_provider()
+    
+    def _init_provider(self):
+        if self.provider == "groq" and GROQ_API_KEY:
+            self._call = self._call_groq
+            self.model = GROQ_MODEL
+        elif self.provider == "openrouter" and OPENROUTER_API_KEY:
+            self._call = self._call_openrouter
+            self.model = OPENROUTER_MODEL
+        elif self.provider == "huggingface" and HUGGINGFACE_API_KEY:
+            self._call = self._call_huggingface
+            self.model = HUGGINGFACE_MODEL
+        else:
+            import ollama
+            self.client = ollama.Client(host=OLLAMA_HOST)
+            self.model = OLLAMA_MODEL
+            self._call = self._call_ollama
     
     def process_article(self, article: Dict) -> Dict:
         original_lang = article.get("original_language", "unknown")
@@ -28,38 +51,28 @@ class AIProcessor:
     
     def _process_german(self, content: str, title: str, levels: List[str]) -> Dict:
         versions = {}
-        
         for level in levels:
             if level == "Original":
                 versions[level] = {"title": title, "content": content}
             else:
                 simplified = self._simplify_to_level(content, title, level)
                 versions[level] = simplified
-        
         return versions
     
     def _process_foreign(self, content: str, title: str, original_lang: str, levels: List[str]) -> Dict:
         versions = {}
-        
         german_translation = self._translate_to_german(content, title, original_lang)
         c1_version = self._simplify_to_level(german_translation["content"], german_translation["title"], "C1")
-        
         versions["C1"] = c1_version
         versions["Original"] = {"title": title, "content": content, "language": original_lang}
-        
         return versions
     
     def _simplify_to_level(self, content: str, title: str, level: str) -> Dict:
         prompt = self._build_simplification_prompt(content, title, level)
         
         try:
-            response = self.client.generate(
-                model=self.model,
-                prompt=prompt,
-                format="json",
-                options={"temperature": 0.3}
-            )
-            result = json.loads(response["response"])
+            response = self._call(prompt, temperature=0.3)
+            result = json.loads(response)
             return {
                 "title": result.get("title", title),
                 "content": result.get("content", content)
@@ -78,16 +91,77 @@ Content: {content}
 Return JSON with keys: title, content"""
         
         try:
-            response = self.client.generate(
-                model=self.model,
-                prompt=prompt,
-                format="json",
-                options={"temperature": 0.2}
-            )
-            return json.loads(response["response"])
+            response = self._call(prompt, temperature=0.2)
+            return json.loads(response)
         except Exception as e:
             logger.error(f"Error translating: {e}")
             return {"title": title, "content": content}
+    
+    def _call_ollama(self, prompt: str, temperature: float = 0.3) -> str:
+        response = self.client.generate(
+            model=self.model,
+            prompt=prompt,
+            format="json",
+            options={"temperature": temperature}
+        )
+        return response["response"]
+    
+    def _call_groq(self, prompt: str, temperature: float = 0.3) -> str:
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "response_format": {"type": "json_object"}
+        }
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers, json=data, timeout=60
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    
+    def _call_openrouter(self, prompt: str, temperature: float = 0.3) -> str:
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/yigidi/deutsch-news",
+            "X-Title": "Deutsch News"
+        }
+        data = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "response_format": {"type": "json_object"}
+        }
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers, json=data, timeout=60
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    
+    def _call_huggingface(self, prompt: str, temperature: float = 0.3) -> str:
+        headers = {
+            "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "inputs": prompt,
+            "parameters": {"temperature": temperature, "max_new_tokens": 2000}
+        }
+        response = requests.post(
+            f"https://api-inference.huggingface.co/models/{self.model}",
+            headers=headers, json=data, timeout=120
+        )
+        response.raise_for_status()
+        result = response.json()
+        if isinstance(result, list):
+            return result[0].get("generated_text", "")
+        return result.get("generated_text", "")
     
     def _build_simplification_prompt(self, content: str, title: str, level: str) -> str:
         level_descriptions = {
