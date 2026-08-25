@@ -23,6 +23,13 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.ai/install.sh | sh
+          ollama serve &
+          sleep 15
+          ollama pull llama3.2:3b
+      
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
@@ -31,9 +38,9 @@ jobs:
         run: |
           python scripts/run.py --once
         env:
-          AI_PROVIDER: groq
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL: llama-3.1-8b-instant
+          AI_PROVIDER: ollama
+          OLLAMA_MODEL: llama3.2:3b
+          OLLAMA_HOST: http://localhost:11434
       
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
