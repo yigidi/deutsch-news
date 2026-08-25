@@ -229,14 +229,35 @@ Return JSON with keys: title, content"""
             "inputs": prompt,
             "parameters": {"temperature": temperature, "max_new_tokens": 2000}
         }
-        response = requests.post(
-            f"https://api-inference.huggingface.co/models/{HUGGINGFACE_MODEL}",
-            headers=headers, json=data, timeout=120
-        )
-        if response.status_code != 200:
-            logger.error(f"HuggingFace API error {response.status_code}: {response.text}")
-        response.raise_for_status()
-        result = response.json()
+        
+        # Retry with DNS handling for GitHub Actions
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    f"https://api-inference.huggingface.co/models/{HUGGINGFACE_MODEL}",
+                    headers=headers, json=data, timeout=120
+                )
+                if response.status_code != 200:
+                    logger.error(f"HuggingFace API error {response.status_code}: {response.text}")
+                response.raise_for_status()
+                result = response.json()
+                if isinstance(result, list):
+                    content = result[0].get("generated_text", "")
+                else:
+                    content = result.get("generated_text", "")
+                logger.info(f"HuggingFace response received, length: {len(content)}")
+                return content
+            except requests.exceptions.ConnectionError as e:
+                if "NameResolutionError" in str(e) or "Failed to resolve" in str(e):
+                    logger.warning(f"HuggingFace DNS error (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                raise
+            except Exception as e:
+                raise
         if isinstance(result, list):
             content = result[0].get("generated_text", "")
         else:
