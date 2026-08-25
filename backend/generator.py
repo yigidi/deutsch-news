@@ -58,6 +58,7 @@ class SiteGenerator:
                 f.write(article_html)
     
     def _render_index(self, articles: List[Dict]) -> str:
+        from backend.config import NEWS_SOURCES
         articles_html = ""
         for article in articles:
             first_version = list(article["versions"].keys())[0] if article["versions"] else "A1"
@@ -73,6 +74,8 @@ class SiteGenerator:
                     {''.join(f'<span class="level-badge">{lvl}</span>' for lvl in article['versions'].keys())}
                 </div>
             </article>"""
+        
+        source_options = ''.join(f'<option value="{k}">{v["name"]}</option>' for k, v in NEWS_SOURCES.items())
         
         return f"""<!DOCTYPE html>
 <html lang="de">
@@ -100,7 +103,7 @@ class SiteGenerator:
             </select>
             <select id="sourceFilter" onchange="filterBySource(this.value)">
                 <option value="">Alle Quellen</option>
-                {''.join(f'<option value="{k}">{v["name"]}</option>' for k,v in __import__('backend.config', fromlist=['NEWS_SOURCES']).NEWS_SOURCES.items())}
+                {source_options}
             </select>
         </div>
         <div id="articles" class="articles-grid">
@@ -136,6 +139,7 @@ class SiteGenerator:
             </section>"""
         
         source_link = f'<a href="{article["source_url"]}" target="_blank" rel="noopener">Quelle: {article["source_name"]}</a>'
+        tab_buttons = ''.join(f'<button class="tab-btn" data-level="{lvl}" onclick="showLevel(\'{lvl}\')">{lvl}</button>' for lvl in article['versions'].keys())
         
         return f"""<!DOCTYPE html>
 <html lang="de">
@@ -156,7 +160,7 @@ class SiteGenerator:
     </header>
     <main>
         <div class="level-tabs">
-            {''.join(f'<button class="tab-btn" data-level="{lvl}" onclick="showLevel(\'{lvl}\')">{lvl}</button>' for lvl in article['versions'].keys())}
+            {tab_buttons}
         </div>
         <div class="versions-container">
             {versions_html}
