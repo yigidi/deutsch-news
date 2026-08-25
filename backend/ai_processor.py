@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import requests
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 from backend.config import (
     CEFR_LEVELS, AI_PROVIDER,
     OLLAMA_MODEL, OLLAMA_HOST,
@@ -16,23 +16,54 @@ logger = logging.getLogger(__name__)
 class AIProcessor:
     def __init__(self):
         self.provider = AI_PROVIDER
-        self._init_provider()
+        self._init_provider_chain()
     
-    def _init_provider(self):
+    def _init_provider_chain(self):
+        """Build a chain of providers to try in order"""
+        self.providers = []
+        
+        # Primary provider from config
         if self.provider == "groq" and GROQ_API_KEY:
-            self._call = self._call_groq
-            self.model = GROQ_MODEL
+            self.providers.append(("groq", self._call_groq, GROQ_MODEL))
         elif self.provider == "openrouter" and OPENROUTER_API_KEY:
-            self._call = self._call_openrouter
-            self.model = OPENROUTER_MODEL
+            self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
         elif self.provider == "huggingface" and HUGGINGFACE_API_KEY:
-            self._call = self._call_huggingface
-            self.model = HUGGINGFACE_MODEL
+            self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
         else:
             import ollama
             self.client = ollama.Client(host=OLLAMA_HOST)
-            self.model = OLLAMA_MODEL
-            self._call = self._call_ollama
+            self.providers.append(("ollama", self._call_ollama, OLLAMA_MODEL))
+        
+        # Add fallbacks (if not already primary)
+        if self.provider != "groq" and GROQ_API_KEY:
+            self.providers.append(("groq", self._call_groq, GROQ_MODEL))
+        if self.provider != "openrouter" and OPENROUTER_API_KEY:
+            self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
+        if self.provider != "huggingface" and HUGGINGFACE_API_KEY:
+            self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
+        if self.provider != "ollama":
+            import ollama
+            self.client = ollama.Client(host=OLLAMA_HOST)
+            self.providers.append(("ollama", self._call_ollama, OLLAMA_MODEL))
+        
+        logger.info(f"Provider chain: {[p[0] for p in self.providers]}")
+    
+    def _call_with_fallback(self, prompt: str, temperature: float = 0.3) -> str:
+        """Try each provider in chain until one works"""
+        last_error = None
+        
+        for name, call_func, model in self.providers:
+            try:
+                logger.info(f"Trying provider: {name} (model: {model})")
+                result = call_func(prompt, temperature)
+                logger.info(f"Provider {name} succeeded")
+                return result
+            except Exception as e:
+                logger.warning(f"Provider {name} failed: {e}")
+                last_error = e
+                continue
+        
+        raise last_error or Exception("All providers failed")
     
     def process_article(self, article: Dict) -> Dict:
         original_lang = article.get("original_language", "unknown")
@@ -40,20 +71,16 @@ class AIProcessor:
         title = article.get("title", "")
         
         if original_lang == "de":
-            # Already German - create all levels directly
             levels = CEFR_LEVELS["de"]
             processed = self._process_german(content, title, levels)
         else:
-            # Translate to German first, then create ALL levels from German
             german_translation = self._translate_to_german(content, title, original_lang)
             german_content = german_translation.get("content", content)
             german_title = german_translation.get("title", title)
             
-            # Create all CEFR levels from the German translation
             levels = CEFR_LEVELS["de"]
             processed = self._process_german(german_content, german_title, levels)
             
-            # Add original language version
             processed["Original"] = {"title": title, "content": content, "language": original_lang}
         
         article["versions"] = processed
@@ -74,13 +101,12 @@ class AIProcessor:
         logger.info(f"Simplifying to {level}, content length: {len(content)}")
         
         try:
-            response = self._call(prompt, temperature=0.3)
+            response = self._call_with_fallback(prompt, temperature=0.3)
             logger.info(f"Raw response for {level}: {response[:200]}")
             result = json.loads(response)
             simplified_content = result.get("content", content)
             simplified_title = result.get("title", title)
             
-            # Check if AI actually simplified (content should be different from original)
             if simplified_content == content and level != "Original":
                 logger.warning(f"AI returned same content for {level}, simplification may have failed")
             
@@ -105,7 +131,7 @@ Content: {content}
 Return JSON with keys: title, content"""
         
         try:
-            response = self._call(prompt, temperature=0.2)
+            response = self._call_with_fallback(prompt, temperature=0.2)
             return json.loads(response)
         except Exception as e:
             logger.error(f"Error translating: {e}")
@@ -113,7 +139,7 @@ Return JSON with keys: title, content"""
     
     def _call_ollama(self, prompt: str, temperature: float = 0.3) -> str:
         response = self.client.generate(
-            model=self.model,
+            model=OLLAMA_MODEL,
             prompt=prompt,
             format="json",
             options={"temperature": temperature}
@@ -121,12 +147,14 @@ Return JSON with keys: title, content"""
         return response["response"]
     
     def _call_groq(self, prompt: str, temperature: float = 0.3) -> str:
+        if not GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY not set")
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
         data = {
-            "model": self.model,
+            "model": GROQ_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
             "response_format": {"type": "json_object"}
@@ -144,6 +172,8 @@ Return JSON with keys: title, content"""
         return content
     
     def _call_openrouter(self, prompt: str, temperature: float = 0.3) -> str:
+        if not OPENROUTER_API_KEY:
+            raise ValueError("OPENROUTER_API_KEY not set")
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -151,7 +181,7 @@ Return JSON with keys: title, content"""
             "X-Title": "Deutsch News"
         }
         data = {
-            "model": self.model,
+            "model": OPENROUTER_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
             "response_format": {"type": "json_object"}
@@ -164,6 +194,8 @@ Return JSON with keys: title, content"""
         return response.json()["choices"][0]["message"]["content"]
     
     def _call_huggingface(self, prompt: str, temperature: float = 0.3) -> str:
+        if not HUGGINGFACE_API_KEY:
+            raise ValueError("HUGGINGFACE_API_KEY not set")
         headers = {
             "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
             "Content-Type": "application/json"
@@ -173,7 +205,7 @@ Return JSON with keys: title, content"""
             "parameters": {"temperature": temperature, "max_new_tokens": 2000}
         }
         response = requests.post(
-            f"https://api-inference.huggingface.co/models/{self.model}",
+            f"https://api-inference.huggingface.co/models/{HUGGINGFACE_MODEL}",
             headers=headers, json=data, timeout=120
         )
         response.raise_for_status()
