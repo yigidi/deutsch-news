@@ -18,7 +18,7 @@ class AIProcessor:
         self.provider = AI_PROVIDER
         self._init_provider_chain()
     
-    def _init_provider_chain(self):
+def _init_provider_chain(self):
         """Build a chain of providers to try in order"""
         self.providers = []
         self.ollama_client = None
@@ -47,16 +47,21 @@ class AIProcessor:
             if HUGGINGFACE_API_KEY:
                 self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
         
-        # Add Ollama ONLY if not in CI (local development)
-        if not in_ci:
+        # Add fallbacks (if not already primary)
+        if self.provider != "groq" and GROQ_API_KEY:
+            self.providers.append(("groq", self._call_groq, GROQ_MODEL))
+        if self.provider != "openrouter" and OPENROUTER_API_KEY:
+            self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
+        if self.provider != "huggingface" and HUGGINGFACE_API_KEY:
+            self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
+        if self.provider != "ollama" and not in_ci:
             import ollama
             self.ollama_client = ollama.Client(host=OLLAMA_HOST)
             self.providers.append(("ollama", self._call_ollama, OLLAMA_MODEL))
-            logger.info("Running locally - Ollama added to provider chain")
-        else:
-            logger.info("Running in CI - skipping Ollama")
         
-        logger.info(f"Provider chain: {[p[0] for p in self.providers]}")
+        # DEBUG: Store provider chain for HTML display
+        self._provider_chain_debug = [f"{p[0]}({p[2]})" for p in self.providers]
+        logger.info(f"Provider chain: {self._provider_chain_debug}")
         if not self.providers:
             logger.error("NO AI PROVIDERS AVAILABLE! Set GROQ_API_KEY, OPENROUTER_API_KEY, or HUGGINGFACE_API_KEY")
     

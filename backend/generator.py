@@ -156,6 +156,12 @@ class SiteGenerator:
         if ai_errors:
             global_error = f'<div class="global-ai-error"><strong>⚠️ AI İşleme Hataları:</strong><ul>{"".join(f"<li>{e}</li>" for e in ai_errors)}</ul></div>'
         
+        # Provider chain debug
+        provider_debug = getattr(self.processor, '_provider_chain_debug', [])
+        debug_info = ""
+        if provider_debug:
+            debug_info = f'<div class="provider-debug"><strong>🔧 AI Providers tried:</strong> {" → ".join(provider_debug)}</div>'
+        
         return f"""<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -175,6 +181,7 @@ class SiteGenerator:
     </header>
     <main>
         {global_error}
+        {debug_info}
         <div class="level-tabs">
             {tab_buttons}
         </div>
