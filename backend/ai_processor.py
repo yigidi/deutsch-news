@@ -59,6 +59,16 @@ class AIProcessor:
         article["versions"] = processed
         return article
     
+    def _process_german(self, content: str, title: str, levels: List[str]) -> Dict:
+        versions = {}
+        for level in levels:
+            if level == "Original":
+                versions[level] = {"title": title, "content": content}
+            else:
+                simplified = self._simplify_to_level(content, title, level)
+                versions[level] = simplified
+        return versions
+    
     def _simplify_to_level(self, content: str, title: str, level: str) -> Dict:
         prompt = self._build_simplification_prompt(content, title, level)
         logger.info(f"Simplifying to {level}, content length: {len(content)}")
