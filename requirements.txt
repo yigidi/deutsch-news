@@ -1,0 +1,10 @@
+requests==2.31.0
+beautifulsoup4==4.12.2
+feedparser==6.0.14
+langdetect==1.0.9
+ollama==0.1.7
+gtts==2.5.1
+deep-translator==1.11.4
+python-dotenv==1.0.0
+schedule==1.2.0
+tqdm==4.66.1
