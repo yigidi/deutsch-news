@@ -21,32 +21,44 @@ class AIProcessor:
     def _init_provider_chain(self):
         """Build a chain of providers to try in order"""
         self.providers = []
+        self.ollama_client = None
+        
+        # Detect if running in CI (no local Ollama)
+        in_ci = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
         
         # Primary provider from config
+        primary_added = False
         if self.provider == "groq" and GROQ_API_KEY:
             self.providers.append(("groq", self._call_groq, GROQ_MODEL))
+            primary_added = True
         elif self.provider == "openrouter" and OPENROUTER_API_KEY:
             self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
+            primary_added = True
         elif self.provider == "huggingface" and HUGGINGFACE_API_KEY:
             self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
-        else:
-            import ollama
-            self.client = ollama.Client(host=OLLAMA_HOST)
-            self.providers.append(("ollama", self._call_ollama, OLLAMA_MODEL))
+            primary_added = True
         
-        # Add fallbacks (if not already primary)
-        if self.provider != "groq" and GROQ_API_KEY:
-            self.providers.append(("groq", self._call_groq, GROQ_MODEL))
-        if self.provider != "openrouter" and OPENROUTER_API_KEY:
-            self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
-        if self.provider != "huggingface" and HUGGINGFACE_API_KEY:
-            self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
-        if self.provider != "ollama":
+        # If no primary configured, try any available API
+        if not primary_added:
+            if GROQ_API_KEY:
+                self.providers.append(("groq", self._call_groq, GROQ_MODEL))
+            if OPENROUTER_API_KEY:
+                self.providers.append(("openrouter", self._call_openrouter, OPENROUTER_MODEL))
+            if HUGGINGFACE_API_KEY:
+                self.providers.append(("huggingface", self._call_huggingface, HUGGINGFACE_MODEL))
+        
+        # Add Ollama ONLY if not in CI (local development)
+        if not in_ci:
             import ollama
-            self.client = ollama.Client(host=OLLAMA_HOST)
+            self.ollama_client = ollama.Client(host=OLLAMA_HOST)
             self.providers.append(("ollama", self._call_ollama, OLLAMA_MODEL))
+            logger.info("Running locally - Ollama added to provider chain")
+        else:
+            logger.info("Running in CI - skipping Ollama")
         
         logger.info(f"Provider chain: {[p[0] for p in self.providers]}")
+        if not self.providers:
+            logger.error("NO AI PROVIDERS AVAILABLE! Set GROQ_API_KEY, OPENROUTER_API_KEY, or HUGGINGFACE_API_KEY")
     
     def _call_with_fallback(self, prompt: str, temperature: float = 0.3) -> str:
         """Try each provider in chain until one works"""
@@ -138,7 +150,10 @@ Return JSON with keys: title, content"""
             return {"title": title, "content": content}
     
     def _call_ollama(self, prompt: str, temperature: float = 0.3) -> str:
-        response = self.client.generate(
+        if not self.ollama_client:
+            import ollama
+            self.ollama_client = ollama.Client(host=OLLAMA_HOST)
+        response = self.ollama_client.generate(
             model=OLLAMA_MODEL,
             prompt=prompt,
             format="json",
