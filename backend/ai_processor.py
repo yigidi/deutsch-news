@@ -71,10 +71,11 @@ class AIProcessor:
                 logger.info(f"Provider {name} succeeded")
                 return result
             except Exception as e:
-                logger.warning(f"Provider {name} failed: {e}")
+                logger.warning(f"Provider {name} failed: {type(e).__name__}: {e}")
                 last_error = e
                 continue
         
+        logger.error(f"ALL PROVIDERS FAILED. Last error: {last_error}")
         raise last_error or Exception("All providers failed")
     
     def process_article(self, article: Dict) -> Dict:
@@ -164,6 +165,7 @@ Return JSON with keys: title, content"""
     def _call_groq(self, prompt: str, temperature: float = 0.3) -> str:
         if not GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY not set")
+        logger.info(f"Calling Groq API with model: {GROQ_MODEL}")
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
@@ -189,6 +191,7 @@ Return JSON with keys: title, content"""
     def _call_openrouter(self, prompt: str, temperature: float = 0.3) -> str:
         if not OPENROUTER_API_KEY:
             raise ValueError("OPENROUTER_API_KEY not set")
+        logger.info(f"Calling OpenRouter API with model: {OPENROUTER_MODEL}")
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -205,12 +208,18 @@ Return JSON with keys: title, content"""
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers, json=data, timeout=60
         )
+        if response.status_code != 200:
+            logger.error(f"OpenRouter API error {response.status_code}: {response.text}")
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        logger.info(f"OpenRouter response received, length: {len(content)}")
+        return content
     
     def _call_huggingface(self, prompt: str, temperature: float = 0.3) -> str:
         if not HUGGINGFACE_API_KEY:
             raise ValueError("HUGGINGFACE_API_KEY not set")
+        logger.info(f"Calling HuggingFace API with model: {HUGGINGFACE_MODEL}")
         headers = {
             "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
             "Content-Type": "application/json"
@@ -223,11 +232,16 @@ Return JSON with keys: title, content"""
             f"https://api-inference.huggingface.co/models/{HUGGINGFACE_MODEL}",
             headers=headers, json=data, timeout=120
         )
+        if response.status_code != 200:
+            logger.error(f"HuggingFace API error {response.status_code}: {response.text}")
         response.raise_for_status()
         result = response.json()
         if isinstance(result, list):
-            return result[0].get("generated_text", "")
-        return result.get("generated_text", "")
+            content = result[0].get("generated_text", "")
+        else:
+            content = result.get("generated_text", "")
+        logger.info(f"HuggingFace response received, length: {len(content)}")
+        return content
     
     def _build_simplification_prompt(self, content: str, title: str, level: str) -> str:
         level_descriptions = {
