@@ -110,5 +110,5 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 AUDIO_DIR = os.path.join(os.path.dirname(__file__), "..", "static", "audio")
 
-MAX_ARTICLES_PER_SOURCE = 5
+MAX_ARTICLES_PER_SOURCE = 3
 UPDATE_INTERVAL_HOURS = 6
