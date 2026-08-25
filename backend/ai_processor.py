@@ -75,16 +75,23 @@ class AIProcessor:
             response = self._call(prompt, temperature=0.3)
             logger.info(f"Raw response for {level}: {response[:200]}")
             result = json.loads(response)
+            simplified_content = result.get("content", content)
+            simplified_title = result.get("title", title)
+            
+            # Check if AI actually simplified (content should be different from original)
+            if simplified_content == content and level != "Original":
+                logger.warning(f"AI returned same content for {level}, simplification may have failed")
+            
             return {
-                "title": result.get("title", title),
-                "content": result.get("content", content)
+                "title": simplified_title,
+                "content": simplified_content
             }
         except json.JSONDecodeError as e:
             logger.error(f"JSON decode error for {level}: {e}, response: {response[:500]}")
-            return {"title": title, "content": content}
+            return {"title": title, "content": content, "_ai_error": f"JSON parse error: {e}"}
         except Exception as e:
             logger.error(f"Error simplifying to {level}: {e}")
-            return {"title": title, "content": content}
+            return {"title": title, "content": content, "_ai_error": str(e)}
     
     def _translate_to_german(self, content: str, title: str, source_lang: str) -> Dict:
         prompt = f"""Translate the following news article from {source_lang} to German (C1 level).

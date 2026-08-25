@@ -305,6 +305,33 @@ main {
     text-decoration: underline;
 }
 
+.ai-error-banner {
+    background: #fff3e0;
+    border: 1px solid #ffb74d;
+    color: #e65100;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+
+.global-ai-error {
+    background: #fbe9e7;
+    border: 1px solid #ffab91;
+    color: #bf360c;
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+}
+
+.global-ai-error ul {
+    margin: 0.5rem 0 0 1.5rem;
+}
+
+.global-ai-error li {
+    margin: 0.25rem 0;
+}
+
 footer {
     text-align: center;
     padding: 2rem;

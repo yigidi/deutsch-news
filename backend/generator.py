@@ -119,12 +119,21 @@ class SiteGenerator:
     
     def _render_article(self, article: Dict) -> str:
         versions_html = ""
+        ai_errors = []
         for level, version in article["versions"].items():
             audio_src = article.get("audio", {}).get(level, "")
             audio_html = f'<audio controls src="{audio_src}"></audio>' if audio_src else '<span class="no-audio">🔊 Audio wird generiert...</span>'
             
             is_original = level == "Original"
             orig_lang = article.get("original_language", "de")
+            
+            # Check for AI errors
+            ai_error = version.get("_ai_error")
+            if ai_error:
+                ai_errors.append(f"{level}: {ai_error}")
+                error_banner = f'<div class="ai-error-banner">⚠️ AI işlemi başarısız: {ai_error}</div>'
+            else:
+                error_banner = ""
             
             versions_html += f"""
             <section class="version-panel" data-level="{level}">
@@ -134,12 +143,18 @@ class SiteGenerator:
                 </div>
                 <h4>{version.get('title', article['title'])}</h4>
                 <div class="version-content" data-lang="{orig_lang if is_original else 'de'}">
+                    {error_banner}
                     {self._format_content(version.get('content', ''), orig_lang if is_original else 'de')}
                 </div>
             </section>"""
         
         source_link = f'<a href="{article["source_url"]}" target="_blank" rel="noopener">Quelle: {article["source_name"]}</a>'
         tab_buttons = ''.join(f'<button class="tab-btn" data-level="{lvl}" onclick="showLevel(\'{lvl}\')">{lvl}</button>' for lvl in article['versions'].keys())
+        
+        # Global AI error banner
+        global_error = ""
+        if ai_errors:
+            global_error = f'<div class="global-ai-error"><strong>⚠️ AI İşleme Hataları:</strong><ul>{"".join(f"<li>{e}</li>" for e in ai_errors)}</ul></div>'
         
         return f"""<!DOCTYPE html>
 <html lang="de">
@@ -159,6 +174,7 @@ class SiteGenerator:
         </div>
     </header>
     <main>
+        {global_error}
         <div class="level-tabs">
             {tab_buttons}
         </div>
